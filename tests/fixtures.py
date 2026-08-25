@@ -2,19 +2,20 @@ from __future__ import annotations
 
 import pandas as pd
 
-from auction_engine.draft_state import LeagueRules
+from auction_engine.draft_state import LeagueRules, RosterEntry
 
 
 def league_rules(
     managers: tuple[str, ...] = ("Manager_01", "Manager_02"),
     position_max: dict[str, int] | None = None,
+    roster_size: int = 10,
 ) -> LeagueRules:
     maxima = {"QB": 2, "RB": 5, "WR": 5, "TE": 3, "DST": 2, "K": 2}
     maxima.update(position_max or {})
     return LeagueRules(
         managers=managers,
         salary_cap=200,
-        roster_size=10,
+        roster_size=roster_size,
         min_bid=1,
         starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "DST": 1, "K": 1},
         position_max=maxima,
@@ -39,3 +40,13 @@ def player_pool(per_position: int = 12) -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(rows)
+
+
+def keeper_map(
+    managers: tuple[str, ...] = ("Manager_01", "Manager_02"),
+) -> dict[str, tuple[RosterEntry, ...]]:
+    keepers = {manager: () for manager in managers}
+    keepers[managers[0]] = (
+        RosterEntry("rb_00", "RB 00", "RB", 2, "keeper"),
+    )
+    return keepers
