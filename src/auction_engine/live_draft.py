@@ -2,14 +2,24 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+import json
 from pathlib import Path
+import re
 from typing import Any
 from uuid import uuid4
 
 import pandas as pd
+import yaml
 
 from .bid_up_to import bid_up_to_remaining
-from .draft_state import LeagueDraftState, LeagueRules, RosterEntry, Sale, replay_draft
+from .draft_state import (
+    DraftValidationError,
+    LeagueDraftState,
+    LeagueRules,
+    RosterEntry,
+    Sale,
+    replay_draft,
+)
 from .ledger import (
     DraftLedger,
     LedgerError,
@@ -56,6 +66,114 @@ class RecalculationResult:
 
 class RecalculationError(RuntimeError):
     pass
+
+
+def normalize_player_key(value: str) -> str:
+    key = re.sub(r"[^a-z0-9]", "", str(value).lower())
+    for suffix in ("iii", "ii", "jr", "sr"):
+        if key.endswith(suffix):
+            return key[: -len(suffix)]
+    return key
+
+
+def league_rules_from_mapping(
+    config: Mapping[str, Any],
+    managers: Sequence[str],
+) -> LeagueRules:
+    league = config["league"]
+    manager_names = tuple(str(manager) for manager in managers)
+    expected_teams = int(league["teams"])
+    if len(manager_names) != expected_teams:
+        raise RecalculationError(
+            f"Expected {expected_teams} managers from league config; "
+            f"found {len(manager_names)}"
+        )
+    return LeagueRules(
+        managers=manager_names,
+        salary_cap=int(league["salary_cap"]),
+        roster_size=int(league["roster_size"]),
+        min_bid=int(league["min_bid"]),
+        starters={key: int(value) for key, value in config["starters"].items()},
+        position_max={
+            key: int(value) for key, value in config["position_max"].items()
+        },
+        flex_eligible=tuple(config.get("flex_eligible", ("RB", "WR", "TE"))),
+    )
+
+
+def _keeper_entries_by_manager(
+    active: pd.DataFrame,
+    managers: Sequence[str],
+    players: pd.DataFrame,
+) -> dict[str, tuple[RosterEntry, ...]]:
+    by_key = players.set_index("player_key", drop=False)
+    keepers: dict[str, list[RosterEntry]] = {str(manager): [] for manager in managers}
+    for row in active.itertuples(index=False):
+        manager = str(row.manager)
+        if manager not in keepers:
+            raise DraftValidationError(
+                "unknown_manager",
+                f"Unknown keeper manager: {manager}",
+            )
+        key = normalize_player_key(row.player)
+        if key not in by_key.index:
+            raise DraftValidationError(
+                "unknown_player",
+                f"Could not match keeper to projections: {row.player}",
+            )
+        projection = by_key.loc[key]
+        raw_cost = float(row.keeper_cost)
+        if not raw_cost.is_integer():
+            raise DraftValidationError(
+                "invalid_keeper_price",
+                f"Keeper price must be an integer: {row.player}",
+            )
+        keepers[manager].append(
+            RosterEntry(
+                player_key=str(projection.player_key),
+                player=str(projection.player),
+                position=str(projection.position),
+                price=int(raw_cost),
+                acquisition="keeper",
+            )
+        )
+    return {manager: tuple(entries) for manager, entries in keepers.items()}
+
+
+def load_draft_inputs(
+    config_path: str | Path,
+    pool_path: str | Path,
+    context_path: str | Path,
+    keepers_path: str | Path,
+) -> DraftInputs:
+    config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+    context = json.loads(Path(context_path).read_text(encoding="utf-8"))
+    players = pd.read_csv(pool_path)
+    keeper_rows = pd.read_csv(keepers_path)
+    required_keeper_columns = {"manager", "player", "status", "keeper_cost"}
+    missing = required_keeper_columns - set(keeper_rows.columns)
+    if missing:
+        raise RecalculationError(f"Missing keeper columns: {sorted(missing)}")
+    managers = tuple(keeper_rows.manager.dropna().astype(str).drop_duplicates())
+    rules = league_rules_from_mapping(config, managers)
+    active = keeper_rows.loc[
+        keeper_rows.status.isin(["likely", "confirmed"])
+        & keeper_rows.player.notna()
+    ].copy()
+    keepers = _keeper_entries_by_manager(active, managers, players)
+    return DraftInputs(
+        rules=rules,
+        keepers=keepers,
+        players=players,
+        target_manager=str(context["target_manager"]),
+        market=MarketBaseline(
+            initial_remaining_capital=float(context["initial_remaining_capital"]),
+            initial_remaining_baseline_value=float(
+                context["initial_remaining_baseline_value"]
+            ),
+        ),
+        top_n=int(context.get("top_n", 80)),
+    )
 
 
 def _prepared_pool(players: pd.DataFrame) -> pd.DataFrame:

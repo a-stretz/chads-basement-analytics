@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -10,20 +11,16 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from auction_engine.bid_up_to import add_bid_up_to
+from auction_engine.live_draft import (
+    DraftInputs,
+    MarketBaseline,
+    RecalculationResult,
+    _keeper_entries_by_manager,
+    league_rules_from_mapping,
+    normalize_player_key,
+    recalculate_draft,
+)
 from auction_engine.market import effective_remaining_capital, historical_capital_deployment, keeper_market_state, market_inflation
-from auction_engine.optimizer import RosterRules
-from auction_engine.replacement import add_vor, league_replacement_levels
-
-
-def player_key(value: str) -> str:
-    import re
-    key = re.sub(r"[^a-z0-9]", "", str(value).lower())
-    for suffix in ("iii", "ii", "jr", "sr"):
-        if key.endswith(suffix):
-            key = key[:-len(suffix)]
-            break
-    return key
 
 
 def find_column(df: pd.DataFrame, candidates: list[str]) -> str:
@@ -45,13 +42,43 @@ def derive_aav(df: pd.DataFrame) -> pd.Series:
     return pd.Series(1.0, index=df.index)
 
 
+def write_live_artifacts(
+    inputs: DraftInputs,
+    output_dir: str | Path,
+    draft_id: str = "cbxii-2026",
+) -> RecalculationResult:
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    result = recalculate_draft(inputs, ())
+    inputs.players.to_csv(output / "draft_pool_2026.csv", index=False)
+    context = {
+        "draft_id": draft_id,
+        "target_manager": inputs.target_manager,
+        "initial_remaining_capital": inputs.market.initial_remaining_capital,
+        "initial_remaining_baseline_value": (
+            inputs.market.initial_remaining_baseline_value
+        ),
+        "top_n": inputs.top_n,
+    }
+    (output / "draft_context_2026.json").write_text(
+        json.dumps(context, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    board = result.board.copy()
+    board["surplus_vs_inflated_aav"] = board["bid_up_to"] - board["inflated_aav"]
+    board.to_csv(output / "draft_board_2026.csv", index=False)
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--projections", default=str(ROOT / "data/processed/projections_2026.csv"))
     parser.add_argument("--config", default=str(ROOT / "config/cbxii.yaml"))
     parser.add_argument("--keepers", default=str(ROOT / "data/private/provisional_keepers_2026.csv"))
-    parser.add_argument("--target-manager", default="Stretz")
+    parser.add_argument("--target-manager", required=True)
     parser.add_argument("--top-n", type=int, default=120)
+    parser.add_argument("--draft-id", default="cbxii-2026")
+    parser.add_argument("--output-dir", default=str(ROOT / "data/processed"))
     args = parser.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text())
@@ -76,15 +103,13 @@ def main() -> None:
     players["position"] = players["position"].replace({"D/ST": "DST", "DEF": "DST"})
     players = players.drop_duplicates(["player", "position"]).copy()
 
-    players["player_key"] = players["player"].map(player_key)
-    keepers["player_key"] = keepers["player"].map(player_key)
+    players["player_key"] = players["player"].map(normalize_player_key)
+    keepers["player_key"] = keepers["player"].map(normalize_player_key)
     active_keepers = keepers[keepers.status.isin(["likely", "confirmed"]) & keepers.player.notna()].copy()
-    own = active_keepers[active_keepers.manager.eq(args.target_manager)]
-    own_keys = set(own.player_key)
-    other_keys = set(active_keepers.loc[~active_keepers.manager.eq(args.target_manager), "player_key"])
-    own_names = set(players.loc[players.player_key.isin(own_keys), "player"])
-    if len(own) and not own_names:
-        raise ValueError(f"Could not match target keeper(s) to projections: {own.player.tolist()}")
+    managers = tuple(keepers.manager.dropna().astype(str).drop_duplicates())
+    rules = league_rules_from_mapping(cfg, managers)
+    if args.target_manager not in managers:
+        raise ValueError(f"Target manager not found in keeper input: {args.target_manager}")
 
     # Normalize public AAV to this league's actual auction economy before measuring
     # keeper inflation. Public AAV sums are not guaranteed to equal 10 x $200.
@@ -113,38 +138,29 @@ def main() -> None:
     effective_capital = effective_remaining_capital(market["league_capital"], market["keeper_spend"], deployment)
     keeper_inflation = market_inflation(effective_capital, remaining_baseline_value)
 
-    # Other managers' keepers are unavailable. The target manager's keeper remains in
-    # the optimization pool at its locked salary and is forced into the starter core.
-    pool = players[~players.player_key.isin(other_keys)].copy()
-    pool["inflated_aav"] = (pool["normalized_aav"] * keeper_inflation).clip(lower=1).round(1)
-    for _, keeper in own.iterrows():
-        pool.loc[pool.player_key.eq(keeper.player_key), "inflated_aav"] = keeper.keeper_cost
-
-    s = cfg["starters"]
-    rules = RosterRules(
-        qb=s["QB"], rb=s["RB"], wr=s["WR"], te=s["TE"], flex=s["FLEX"],
-        dst=s["DST"], k=s["K"], roster_size=cfg["league"]["roster_size"], min_bid=cfg["league"]["min_bid"]
-    )
-    levels = league_replacement_levels(players[~players.player_key.isin(set(active_keepers.player_key))], cfg["league"]["teams"], rules)
-    pool = add_vor(pool, levels)
-    board = add_bid_up_to(
-        pool,
-        budget=cfg["league"]["salary_cap"],
+    keeper_entries = _keeper_entries_by_manager(active_keepers, managers, players)
+    inputs = DraftInputs(
         rules=rules,
+        keepers=keeper_entries,
+        players=players,
+        target_manager=args.target_manager,
+        market=MarketBaseline(effective_capital, remaining_baseline_value),
         top_n=args.top_n,
-        always_force=own_names,
-        exclude_from_output=own_names,
     )
-    board["surplus_vs_inflated_aav"] = board["bid_up_to"] - board["inflated_aav"]
-    board["keeper_locked"] = board.player.isin(own_names)
-    board = board[~board.keeper_locked].sort_values(["bid_up_to", "vor", "projected_points"], ascending=False)
-    out = ROOT / "data/processed/draft_board_2026.csv"
-    board.to_csv(out, index=False)
+    result = write_live_artifacts(inputs, args.output_dir, draft_id=args.draft_id)
+    own_names = [entry.player for entry in keeper_entries[args.target_manager]]
+    out = Path(args.output_dir) / "draft_board_2026.csv"
     print(f"keeper_spend=${market['keeper_spend']:.0f}; remaining_capital=${market['remaining_capital']:.0f}; effective_capital=${effective_capital:.1f}; deployment={deployment:.4f}")
     print(f"aav_normalization={aav_normalization:.3f}; keeper_market_value=${keeper_market_value:.1f}; keeper_inflation={keeper_inflation:.3f}")
     print(f"target_manager={args.target_manager}; own_keeper={','.join(own_names) if own_names else 'none'}")
-    print("replacement_levels=" + ", ".join(f"{k}:{v:.1f}" for k, v in levels.items()))
-    print(f"Wrote {len(board):,} rows to {out}")
+    print(
+        "replacement_levels="
+        + ", ".join(
+            f"{key}:{value:.1f}"
+            for key, value in result.scarcity.league_replacement_levels.items()
+        )
+    )
+    print(f"Wrote {len(result.board):,} rows to {out}")
 
 
 if __name__ == "__main__":
