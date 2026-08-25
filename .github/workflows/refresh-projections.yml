@@ -2,6 +2,11 @@ name: Refresh 2026 projections
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - scripts/pull_projections.R
+      - .github/workflows/refresh-projections.yml
 
 jobs:
   projections:
