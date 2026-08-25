@@ -1,0 +1,11 @@
+team_slot,manager,player,position,keeper_cost,status
+1,Manager_01,Travis Etienne Jr.,RB,9,likely
+2,Manager_02,George Pickens,WR,14,likely
+3,Manager_03,Jaxon Smith-Njigba,WR,23,likely
+4,Manager_04,James Cook III,RB,34,likely
+5,Manager_05,D'Andre Swift,RB,18,likely
+6,Manager_06,Kenneth Walker III,RB,24,likely
+7,Manager_07,,NONE,0,opt_out
+8,Manager_08,Emeka Egbuka,WR,15,likely
+9,Manager_09,Zay Flowers,WR,16,likely
+10,Manager_10,Chris Olave,WR,13,likely
