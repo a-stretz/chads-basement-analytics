@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+.worktrees/
 .env
 .DS_Store
 .streamlit/secrets.toml
