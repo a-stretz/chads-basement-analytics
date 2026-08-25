@@ -3,8 +3,9 @@
 # Current-season projection ingestion. This deliberately isolates scraping from
 # the Python optimization engine so upstream site changes do not affect model code.
 
-if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes", repos = "https://cloud.r-project.org")
-if (!requireNamespace("ffanalytics", quietly = TRUE)) remotes::install_github("FantasyFootballAnalytics/ffanalytics")
+if (!requireNamespace("ffanalytics", quietly = TRUE)) {
+  stop("ffanalytics is not installed. Use the included GitHub Actions workflow or install the public FantasyFootballAnalytics/ffanalytics package first.")
+}
 if (!requireNamespace("readr", quietly = TRUE)) install.packages("readr", repos = "https://cloud.r-project.org")
 if (!requireNamespace("dplyr", quietly = TRUE)) install.packages("dplyr", repos = "https://cloud.r-project.org")
 
