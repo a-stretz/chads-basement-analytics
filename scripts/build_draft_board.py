@@ -16,6 +16,16 @@ from auction_engine.optimizer import RosterRules
 from auction_engine.replacement import add_vor, league_replacement_levels
 
 
+def player_key(value: str) -> str:
+    import re
+    key = re.sub(r"[^a-z0-9]", "", str(value).lower())
+    for suffix in ("iii", "ii", "jr", "sr"):
+        if key.endswith(suffix):
+            key = key[:-len(suffix)]
+            break
+    return key
+
+
 def find_column(df: pd.DataFrame, candidates: list[str]) -> str:
     lower = {c.lower(): c for c in df.columns}
     for candidate in candidates:
@@ -66,35 +76,56 @@ def main() -> None:
     players["position"] = players["position"].replace({"D/ST": "DST", "DEF": "DST"})
     players = players.drop_duplicates(["player", "position"]).copy()
 
+    players["player_key"] = players["player"].map(player_key)
+    keepers["player_key"] = keepers["player"].map(player_key)
     active_keepers = keepers[keepers.status.isin(["likely", "confirmed"]) & keepers.player.notna()].copy()
     own = active_keepers[active_keepers.manager.eq(args.target_manager)]
-    own_names = set(own.player)
-    other_names = set(active_keepers.loc[~active_keepers.manager.eq(args.target_manager), "player"])
+    own_keys = set(own.player_key)
+    other_keys = set(active_keepers.loc[~active_keepers.manager.eq(args.target_manager), "player_key"])
+    own_names = set(players.loc[players.player_key.isin(own_keys), "player"])
+    if len(own) and not own_names:
+        raise ValueError(f"Could not match target keeper(s) to projections: {own.player.tolist()}")
 
-    pool = players[~players.player.isin(other_names)].copy()
-    pool["inflated_aav"] = pool["aav"].astype(float)
-
+    # Normalize public AAV to this league's actual auction economy before measuring
+    # keeper inflation. Public AAV sums are not guaranteed to equal 10 x $200.
     market = keeper_market_state(keepers, teams=cfg["league"]["teams"], cap=cfg["league"]["salary_cap"])
     history_path = ROOT / "data/processed/historical_transactions.csv"
     deployment = 1.0
     if history_path.exists():
         history = pd.read_csv(history_path)
         deployment = historical_capital_deployment(history, teams=cfg["league"]["teams"], cap=cfg["league"]["salary_cap"], seasons=5)
+
+    target_league_spend = market["league_capital"] * deployment
+    full_roster_slots = cfg["league"]["teams"] * cfg["league"]["roster_size"]
+    baseline_pool = players.nlargest(min(full_roster_slots, len(players)), "aav")
+    raw_aav_total = baseline_pool["aav"].fillna(1).clip(lower=1).sum()
+    aav_normalization = target_league_spend / raw_aav_total
+    players["normalized_aav"] = players["aav"] * aav_normalization
+
+    active_keys = set(active_keepers.player_key)
+    keeper_market_value = players.loc[players.player_key.isin(active_keys), "normalized_aav"].sum()
+    if len(active_keys) != players.loc[players.player_key.isin(active_keys), "player_key"].nunique():
+        matched = set(players.loc[players.player_key.isin(active_keys), "player_key"])
+        missing = active_keys - matched
+        raise ValueError(f"Could not match keeper(s) to projections: {sorted(missing)}")
+
+    remaining_baseline_value = target_league_spend - keeper_market_value
     effective_capital = effective_remaining_capital(market["league_capital"], market["keeper_spend"], deployment)
-    remaining_roster_slots = cfg["league"]["teams"] * cfg["league"]["roster_size"] - int(market["keeper_count"])
-    auction_only = pool[~pool.player.isin(own_names)].nlargest(min(remaining_roster_slots, len(pool)), "aav")
-    baseline = auction_only["aav"].fillna(1).clip(lower=1).sum()
-    factor = market_inflation(effective_capital, baseline)
-    pool.loc[~pool.player.isin(own_names), "inflated_aav"] = (pool.loc[~pool.player.isin(own_names), "aav"] * factor).clip(lower=1).round(1)
+    keeper_inflation = market_inflation(effective_capital, remaining_baseline_value)
+
+    # Other managers' keepers are unavailable. The target manager's keeper remains in
+    # the optimization pool at its locked salary and is forced into the starter core.
+    pool = players[~players.player_key.isin(other_keys)].copy()
+    pool["inflated_aav"] = (pool["normalized_aav"] * keeper_inflation).clip(lower=1).round(1)
     for _, keeper in own.iterrows():
-        pool.loc[pool.player.eq(keeper.player), "inflated_aav"] = keeper.keeper_cost
+        pool.loc[pool.player_key.eq(keeper.player_key), "inflated_aav"] = keeper.keeper_cost
 
     s = cfg["starters"]
     rules = RosterRules(
         qb=s["QB"], rb=s["RB"], wr=s["WR"], te=s["TE"], flex=s["FLEX"],
         dst=s["DST"], k=s["K"], roster_size=cfg["league"]["roster_size"], min_bid=cfg["league"]["min_bid"]
     )
-    levels = league_replacement_levels(players[~players.player.isin(set(active_keepers.player))], cfg["league"]["teams"], rules)
+    levels = league_replacement_levels(players[~players.player_key.isin(set(active_keepers.player_key))], cfg["league"]["teams"], rules)
     pool = add_vor(pool, levels)
     board = add_bid_up_to(
         pool,
@@ -109,7 +140,8 @@ def main() -> None:
     board = board[~board.keeper_locked].sort_values(["bid_up_to", "vor", "projected_points"], ascending=False)
     out = ROOT / "data/processed/draft_board_2026.csv"
     board.to_csv(out, index=False)
-    print(f"keeper_spend=${market['keeper_spend']:.0f}; remaining_capital=${market['remaining_capital']:.0f}; effective_capital=${effective_capital:.1f}; deployment={deployment:.4f}; market_factor={factor:.3f}")
+    print(f"keeper_spend=${market['keeper_spend']:.0f}; remaining_capital=${market['remaining_capital']:.0f}; effective_capital=${effective_capital:.1f}; deployment={deployment:.4f}")
+    print(f"aav_normalization={aav_normalization:.3f}; keeper_market_value=${keeper_market_value:.1f}; keeper_inflation={keeper_inflation:.3f}")
     print(f"target_manager={args.target_manager}; own_keeper={','.join(own_names) if own_names else 'none'}")
     print("replacement_levels=" + ", ".join(f"{k}:{v:.1f}" for k, v in levels.items()))
     print(f"Wrote {len(board):,} rows to {out}")
