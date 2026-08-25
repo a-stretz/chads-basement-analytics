@@ -1,0 +1,19 @@
+name: Refresh 2026 projections
+
+on:
+  workflow_dispatch:
+
+jobs:
+  projections:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+      - name: Pull projections
+        run: Rscript scripts/pull_projections.R
+      - uses: actions/upload-artifact@v4
+        with:
+          name: projections-2026
+          path: |
+            data/processed/projections_2026.csv
+            data/processed/projection_source_summary_2026.csv
