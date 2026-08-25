@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.DS_Store
+.streamlit/secrets.toml
+
+# League-specific/private source and generated data
+data/private/
+data/processed/
+
+# Draft-night state
+state/
