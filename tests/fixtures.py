@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pandas as pd
+
 from auction_engine.draft_state import LeagueRules
 
 
@@ -18,3 +20,22 @@ def league_rules(
         position_max=maxima,
         flex_eligible=("RB", "WR", "TE"),
     )
+
+
+def player_pool(per_position: int = 12) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    bases = {"QB": 300.0, "RB": 240.0, "WR": 230.0, "TE": 190.0, "DST": 120.0, "K": 100.0}
+    for position, base in bases.items():
+        for index in range(per_position):
+            key = f"{position.lower()}_{index:02d}"
+            rows.append(
+                {
+                    "player_key": key,
+                    "player": f"{position} {index:02d}",
+                    "position": position,
+                    "projected_points": base - index,
+                    "normalized_aav": max(1.0, 30.0 - index),
+                    "aav": max(1.0, 28.0 - index),
+                }
+            )
+    return pd.DataFrame(rows)
