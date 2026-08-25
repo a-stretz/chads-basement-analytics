@@ -2,12 +2,25 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 
 from .bid_up_to import bid_up_to_remaining
 from .draft_state import LeagueDraftState, LeagueRules, RosterEntry, Sale, replay_draft
+from .ledger import (
+    DraftLedger,
+    LedgerError,
+    edit_sale as ledger_edit_sale,
+    empty_ledger,
+    fold_sales,
+    load_ledger,
+    record_sale as ledger_record_sale,
+    save_ledger_atomic,
+    undo_sale as ledger_undo_sale,
+)
 from .market import apply_inflation, market_inflation
 from .optimizer import CompletionResult, optimize_roster_completion
 from .scarcity import ScarcityResult, calculate_scarcity
@@ -277,3 +290,117 @@ def canonical_snapshot(result: RecalculationResult) -> dict[str, Any]:
         },
         "board": board,
     }
+
+
+class LiveDraftSession:
+    """Persisted ledger session that validates a complete replay before saving."""
+
+    def __init__(
+        self,
+        path: str | Path,
+        inputs: DraftInputs,
+        ledger: DraftLedger,
+        result: RecalculationResult,
+    ) -> None:
+        self.path = Path(path)
+        self.inputs = inputs
+        self.ledger = ledger
+        self.result = result
+
+    @classmethod
+    def create(
+        cls,
+        path: str | Path,
+        inputs: DraftInputs,
+        draft_id: str,
+    ) -> "LiveDraftSession":
+        ledger = empty_ledger(draft_id)
+        result = recalculate_draft(inputs, ())
+        save_ledger_atomic(path, ledger)
+        return cls(path, inputs, ledger, result)
+
+    @classmethod
+    def load(
+        cls,
+        path: str | Path,
+        inputs: DraftInputs,
+    ) -> "LiveDraftSession":
+        ledger = load_ledger(path)
+        result = recalculate_draft(inputs, fold_sales(ledger))
+        return cls(path, inputs, ledger, result)
+
+    def snapshot(self) -> RecalculationResult:
+        return self.result
+
+    def _commit(self, candidate: DraftLedger) -> None:
+        candidate_result = recalculate_draft(self.inputs, fold_sales(candidate))
+        save_ledger_atomic(self.path, candidate)
+        self.ledger = candidate
+        self.result = candidate_result
+
+    def _canonical_sale(
+        self,
+        player_key: str,
+        manager: str,
+        price: int,
+        order: int,
+        sale_id: str | None = None,
+    ) -> Sale:
+        matches = self.inputs.players.loc[
+            self.inputs.players.player_key.eq(player_key)
+        ]
+        if len(matches) != 1:
+            raise RecalculationError(
+                f"Expected one projection row for {player_key}; found {len(matches)}"
+            )
+        row = matches.iloc[0]
+        return Sale(
+            sale_id=sale_id or str(uuid4()),
+            player_key=str(row.player_key),
+            player=str(row.player),
+            position=str(row.position),
+            manager=manager,
+            price=price,
+            order=order,
+        )
+
+    def record_sale(self, player_key: str, manager: str, price: int) -> Sale:
+        order = max(
+            (
+                event.sale.order
+                for event in self.ledger.events
+                if event.event_type == "sale_recorded" and event.sale is not None
+            ),
+            default=0,
+        ) + 1
+        sale = self._canonical_sale(player_key, manager, price, order)
+        candidate = ledger_record_sale(self.ledger, sale)
+        self._commit(candidate)
+        return sale
+
+    def edit_sale(
+        self,
+        sale_id: str,
+        *,
+        player_key: str | None = None,
+        manager: str | None = None,
+        price: int | None = None,
+    ) -> Sale:
+        active = {sale.sale_id: sale for sale in fold_sales(self.ledger)}
+        if sale_id not in active:
+            raise LedgerError(f"Sale is not active: {sale_id}")
+        current = active[sale_id]
+        corrected = self._canonical_sale(
+            player_key if player_key is not None else current.player_key,
+            manager if manager is not None else current.manager,
+            price if price is not None else current.price,
+            current.order,
+            sale_id=sale_id,
+        )
+        candidate = ledger_edit_sale(self.ledger, sale_id, corrected)
+        self._commit(candidate)
+        return corrected
+
+    def undo_sale(self, sale_id: str) -> None:
+        candidate = ledger_undo_sale(self.ledger, sale_id)
+        self._commit(candidate)
