@@ -1,0 +1,64 @@
+league:
+  name: "Chad's Basement CBXII"
+  season: 2026
+  teams: 10
+  salary_cap: 200
+  roster_size: 16
+  min_bid: 1
+  keeper_limit: 1
+  draft_datetime: "2026-08-27T20:00:00-05:00"
+
+starters:
+  QB: 1
+  RB: 2
+  WR: 2
+  TE: 1
+  FLEX: 2
+  DST: 1
+  K: 1
+
+position_max:
+  QB: 4
+  RB: 8
+  WR: 8
+  TE: 3
+  DST: 3
+  K: 3
+
+flex_eligible: [RB, WR, TE]
+
+scoring:
+  pass_yds: 0.04
+  pass_td: 4
+  pass_int: -2
+  rush_yds: 0.1
+  rush_td: 6
+  reception: 0.5
+  rec_yds: 0.1
+  rec_td: 6
+  two_point: 2
+  fumble_lost: -2
+  return_td: 6
+  dst_sack: 1
+  dst_block: 2
+  dst_interception: 2
+  dst_fumble_recovery: 2
+  dst_safety: 2
+  dst_td: 6
+  dst_points_allowed:
+    - {max: 0, points: 8}
+    - {max: 6, points: 5}
+    - {max: 13, points: 3}
+    - {max: 17, points: 1}
+    - {max: 27, points: 0}
+    - {max: 34, points: -1}
+    - {max: 45, points: -3}
+    - {max: 99, points: -5}
+
+model:
+  reserve_minimum_for_bench: true
+  use_per_game_yardage_bonuses: false
+  kicker_enabled: true
+  defense_enabled: true
+  projection_aggregate: average
+  starter_core_objective: projected_points
