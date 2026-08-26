@@ -37,6 +37,9 @@
 - [x] Keep DST/K slots and minimum dollars in roster state and maximum legal bid
 - [x] Exclude DST/K from scarcity, active points, recommendations, and Bid-Up-To
 - [x] Record, persist, edit, replay, and undo projection-free DST/K purchases
+- [x] Keep the nomination player list permanently ranked by available normalized AAV
+- [x] Reuse the calculated live session across ordinary Streamlit widget changes
+- [x] Show nomination AAV, market estimate, Bid-Up-To, projection, and roster need inline
 
 ## Phase 1 acceptance verified
 
@@ -69,9 +72,19 @@
 - [x] Replay projection-free K purchases identically through record, reload, edit, undo, and reload
 - [x] Preserve all Phase 1 deterministic ledger and atomic persistence acceptance tests
 
+## Phase 3 acceptance verified
+
+- [x] Keep 115 available modeled players in deterministic highest-to-lowest AAV order
+- [x] Expose AAV in the searchable nomination labels
+- [x] Update a selected nomination and its context in about 1.25 seconds without replaying the ledger
+- [x] Record a live purchase with full recalculation and persistence in about 2.4 seconds
+- [x] Keep the selected manager's budget, slots, positional need, and maximum legal bid beside entry controls
+- [x] Keep one-click undo visible and restore the pre-test active state in about 2.0 seconds
+- [x] Pass the complete 48-test suite after the interaction changes
+
 ## Next model work
 
-- [ ] Phase 3: tune the draft-night interaction for one purchase in a few seconds
+- [ ] Optional nomination filters by position, alphabetic order, and reversible AAV order
 - [ ] Add expected clearing price using league-specific manager behavior
 - [ ] Add scenario simulation / uncertainty objective
 

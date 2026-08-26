@@ -22,6 +22,9 @@ The engine is inspired by the optimization concepts in Fantasy Football Analytic
 - Calculates player-specific Bid-Up-To ceilings from opportunity cost with roughly two constrained optimization problems per candidate.
 - Includes a persisted Streamlit draft board with record, edit, undo, and
   projection-free DST/K accounting.
+- Keeps the searchable nomination list in highest-to-lowest league AAV order,
+  reuses the current calculated session between widget changes, and presents
+  nomination context beside the sale controls.
 
 ## Historical data
 
@@ -77,7 +80,8 @@ entry form even when upstream projections contain no matching row.
 
 ## Next iterations
 
-- Tune the draft-night interaction so one purchase can be entered in a few seconds.
+- Optionally filter nominations by position or alphabetic order and reverse the
+  fixed AAV sort when deeper browsing is useful.
 - Estimate expected clearing price from ten years of league-specific behavior.
 - Add manager-level spending priors by position, early-auction aggression, and stars-and-scrubs tendency.
 - Add scenario simulation and uncertainty-aware objectives.
