@@ -81,8 +81,9 @@
 - [x] Keep the selected manager's budget, slots, positional need, and maximum legal bid beside entry controls
 - [x] Disable modeled purchases at a manager's positional maximum before submission
 - [x] Reject stale-session commits before they can overwrite newer ledger events
+- [x] Serialize concurrent commits against an immutable base ledger so reported successes equal persisted sales
 - [x] Keep one-click undo visible and restore the pre-test active state in about 2.0 seconds
-- [x] Pass the complete 50-test suite after the interaction and concurrency changes
+- [x] Pass the complete 51-test suite after the interaction and concurrency changes
 
 ## Next model work
 

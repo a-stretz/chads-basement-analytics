@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 
 import auction_engine.live_draft as live_draft_module
@@ -129,6 +132,34 @@ def test_stale_session_cannot_overwrite_newer_ledger_events(tmp_path):
     assert [sale.sale_id for sale in reloaded.snapshot().state.active_sales] == [
         first_sale.sale_id
     ]
+
+
+def test_concurrent_session_successes_equal_persisted_sales(tmp_path):
+    path = tmp_path / "draft.json"
+    inputs = acceptance_inputs()
+    session = LiveDraftSession.create(path, inputs, draft_id="synthetic-2026")
+    start = Barrier(2)
+
+    def record(player_key, manager):
+        start.wait()
+        try:
+            session.record_sale(player_key, manager, 2)
+            return "success"
+        except LedgerError:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = tuple(
+            future.result()
+            for future in (
+                executor.submit(record, "qb_00", "Manager_01"),
+                executor.submit(record, "rb_00", "Manager_02"),
+            )
+        )
+
+    persisted = LiveDraftSession.load(path, inputs).snapshot().state.active_sales
+    assert len(persisted) == outcomes.count("success")
+    assert outcomes.count("success") >= 1
 
 
 def test_projection_free_k_sale_reloads_edits_and_undoes_deterministically(tmp_path):

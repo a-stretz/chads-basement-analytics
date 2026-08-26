@@ -574,10 +574,14 @@ class LiveDraftSession:
     def snapshot(self) -> RecalculationResult:
         return self.result
 
-    def _commit(self, candidate: DraftLedger) -> None:
+    def _commit(
+        self,
+        expected: DraftLedger,
+        candidate: DraftLedger,
+    ) -> None:
         with _LEDGER_COMMIT_LOCK:
             persisted = load_ledger(self.path)
-            if persisted != self.ledger:
+            if persisted != expected or self.ledger != expected:
                 raise LedgerError(
                     "Draft ledger changed in another session. Reload the app "
                     "before recording this transaction."
@@ -613,25 +617,27 @@ class LiveDraftSession:
             order=order,
         )
 
-    def _next_sale_order(self) -> int:
+    @staticmethod
+    def _next_sale_order(ledger: DraftLedger) -> int:
         return max(
             (
                 event.sale.order
-                for event in self.ledger.events
+                for event in ledger.events
                 if event.event_type == "sale_recorded" and event.sale is not None
             ),
             default=0,
         ) + 1
 
     def record_sale(self, player_key: str, manager: str, price: int) -> Sale:
+        expected = self.ledger
         sale = self._canonical_sale(
             player_key,
             manager,
             price,
-            self._next_sale_order(),
+            self._next_sale_order(expected),
         )
-        candidate = ledger_record_sale(self.ledger, sale)
-        self._commit(candidate)
+        candidate = ledger_record_sale(expected, sale)
+        self._commit(expected, candidate)
         return sale
 
     def record_unmodeled_sale(
@@ -641,6 +647,7 @@ class LiveDraftSession:
         manager: str,
         price: int,
     ) -> Sale:
+        expected = self.ledger
         canonical_position = str(position).strip().upper()
         if canonical_position in self.inputs.rules.modeled_positions:
             raise RecalculationError(
@@ -664,10 +671,10 @@ class LiveDraftSession:
             position=canonical_position,
             manager=manager,
             price=price,
-            order=self._next_sale_order(),
+            order=self._next_sale_order(expected),
         )
-        candidate = ledger_record_sale(self.ledger, sale)
-        self._commit(candidate)
+        candidate = ledger_record_sale(expected, sale)
+        self._commit(expected, candidate)
         return sale
 
     def edit_sale(
@@ -678,7 +685,8 @@ class LiveDraftSession:
         manager: str | None = None,
         price: int | None = None,
     ) -> Sale:
-        active = {sale.sale_id: sale for sale in fold_sales(self.ledger)}
+        expected = self.ledger
+        active = {sale.sale_id: sale for sale in fold_sales(expected)}
         if sale_id not in active:
             raise LedgerError(f"Sale is not active: {sale_id}")
         current = active[sale_id]
@@ -701,11 +709,12 @@ class LiveDraftSession:
                 current.order,
                 sale_id=sale_id,
             )
-        candidate = ledger_edit_sale(self.ledger, sale_id, corrected)
-        self._commit(candidate)
+        candidate = ledger_edit_sale(expected, sale_id, corrected)
+        self._commit(expected, candidate)
         return corrected
 
     def undo_sale(self, sale_id: str) -> None:
-        candidate = ledger_undo_sale(self.ledger, sale_id)
-        self._commit(candidate)
+        expected = self.ledger
+        candidate = ledger_undo_sale(expected, sale_id)
+        self._commit(expected, candidate)
 
