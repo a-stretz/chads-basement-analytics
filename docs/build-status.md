@@ -79,8 +79,10 @@
 - [x] Update a selected nomination and its context in about 1.25 seconds without replaying the ledger
 - [x] Record a live purchase with full recalculation and persistence in about 2.4 seconds
 - [x] Keep the selected manager's budget, slots, positional need, and maximum legal bid beside entry controls
+- [x] Disable modeled purchases at a manager's positional maximum before submission
+- [x] Reject stale-session commits before they can overwrite newer ledger events
 - [x] Keep one-click undo visible and restore the pre-test active state in about 2.0 seconds
-- [x] Pass the complete 48-test suite after the interaction changes
+- [x] Pass the complete 50-test suite after the interaction and concurrency changes
 
 ## Next model work
 

@@ -7,6 +7,8 @@ from typing import Any
 
 import pandas as pd
 
+from .draft_state import ManagerState
+
 
 _DRAFT_RESOURCES_KEY = "_draft_resources"
 
@@ -35,6 +37,21 @@ def draft_input_version(paths: Sequence[str | Path]) -> str:
         digest.update(path.read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def sale_eligibility(
+    manager: ManagerState,
+    position: str,
+    min_bid: int,
+) -> tuple[bool, str | None]:
+    """Explain whether the selected manager can legally buy the nomination."""
+    if manager.roster_slots_remaining <= 0:
+        return False, "Roster is full"
+    if manager.position_capacity.get(position, 0) <= 0:
+        return False, f"{position} maximum reached"
+    if manager.maximum_legal_bid < min_bid:
+        return False, "No legal bid remaining"
+    return True, None
 
 
 def prepare_nomination_pool(

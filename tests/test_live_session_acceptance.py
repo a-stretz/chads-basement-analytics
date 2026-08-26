@@ -4,6 +4,7 @@ import pytest
 
 import auction_engine.live_draft as live_draft_module
 from auction_engine.draft_state import DraftValidationError, LeagueRules
+from auction_engine.ledger import LedgerError
 from auction_engine.live_draft import (
     DraftInputs,
     LiveDraftSession,
@@ -109,6 +110,25 @@ def test_failed_persistence_does_not_replace_in_memory_state(tmp_path, monkeypat
 
     assert path.read_bytes() == before_file
     assert canonical_snapshot(session.snapshot()) == before_snapshot
+
+
+def test_stale_session_cannot_overwrite_newer_ledger_events(tmp_path):
+    path = tmp_path / "draft.json"
+    inputs = acceptance_inputs()
+    first = LiveDraftSession.create(path, inputs, draft_id="synthetic-2026")
+    stale = LiveDraftSession.load(path, inputs)
+
+    first_sale = first.record_sale("qb_00", "Manager_01", 2)
+    persisted_after_first = path.read_bytes()
+
+    with pytest.raises(LedgerError, match="another session"):
+        stale.record_sale("rb_00", "Manager_02", 2)
+
+    assert path.read_bytes() == persisted_after_first
+    reloaded = LiveDraftSession.load(path, inputs)
+    assert [sale.sale_id for sale in reloaded.snapshot().state.active_sales] == [
+        first_sale.sale_id
+    ]
 
 
 def test_projection_free_k_sale_reloads_edits_and_undoes_deterministically(tmp_path):

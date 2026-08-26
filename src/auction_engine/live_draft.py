@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
+from threading import RLock
 from typing import Any
 from uuid import uuid4
 
@@ -40,6 +41,7 @@ from .scarcity import ScarcityResult, calculate_scarcity
 ACTIVE_KEEPER_STATUSES = frozenset({"likely", "confirmed"})
 KEEPER_STATUSES = frozenset({*ACTIVE_KEEPER_STATUSES, "opt_out", "none"})
 LIVE_CONTEXT_SCHEMA_VERSION = 2
+_LEDGER_COMMIT_LOCK = RLock()
 
 
 @dataclass(frozen=True)
@@ -573,10 +575,17 @@ class LiveDraftSession:
         return self.result
 
     def _commit(self, candidate: DraftLedger) -> None:
-        candidate_result = recalculate_draft(self.inputs, fold_sales(candidate))
-        save_ledger_atomic(self.path, candidate)
-        self.ledger = candidate
-        self.result = candidate_result
+        with _LEDGER_COMMIT_LOCK:
+            persisted = load_ledger(self.path)
+            if persisted != self.ledger:
+                raise LedgerError(
+                    "Draft ledger changed in another session. Reload the app "
+                    "before recording this transaction."
+                )
+            candidate_result = recalculate_draft(self.inputs, fold_sales(candidate))
+            save_ledger_atomic(self.path, candidate)
+            self.ledger = candidate
+            self.result = candidate_result
 
     def _canonical_sale(
         self,

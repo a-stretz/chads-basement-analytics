@@ -16,6 +16,7 @@ from auction_engine.draft_ui import (
     get_or_load_draft_resources,
     nomination_labels,
     prepare_nomination_pool,
+    sale_eligibility,
 )
 from auction_engine.ledger import LedgerError
 from auction_engine.live_draft import (
@@ -107,11 +108,21 @@ with st.sidebar:
         options=inputs.rules.managers,
     )
     manager_state = result.state.managers[manager_name]
-    legal_sale = (
-        player_key is not None
-        and manager_state.roster_slots_remaining > 0
-        and manager_state.maximum_legal_bid >= inputs.rules.min_bid
+    nomination = (
+        None
+        if player_key is None
+        else result.board.loc[result.board.player_key.eq(player_key)].iloc[0]
     )
+    position_legal, position_error = (
+        (False, None)
+        if nomination is None
+        else sale_eligibility(
+            manager_state,
+            str(nomination.position),
+            inputs.rules.min_bid,
+        )
+    )
+    legal_sale = nomination is not None and position_legal
     price_max = max(inputs.rules.min_bid, manager_state.maximum_legal_bid)
     price = entry_columns[1].number_input(
         "Winning bid",
@@ -121,10 +132,7 @@ with st.sidebar:
         step=1,
         disabled=not legal_sale,
     )
-    if player_key is not None:
-        nomination = result.board.loc[
-            result.board.player_key.eq(player_key)
-        ].iloc[0]
+    if nomination is not None:
         bid_up_to = (
             "—"
             if pd.isna(nomination.bid_up_to)
@@ -141,7 +149,7 @@ with st.sidebar:
             f"${int(round(float(nomination.normalized_aav)))}",
         )
         nomination_metrics[1].metric("Market est.", market_estimate)
-        nomination_metrics[2].metric("Bid-Up-To", bid_up_to)
+        nomination_metrics[2].metric("Target Bid-Up-To", bid_up_to)
         position_need = manager_state.starter_needs.get(
             str(nomination.position),
             0,
@@ -156,6 +164,8 @@ with st.sidebar:
             f"starter need {position_need}"
             + (f" · FLEX need {flex_need}" if nomination.position in inputs.rules.flex_eligible else "")
         )
+        if position_error is not None:
+            st.warning(f"{manager_name}: {position_error}")
     st.caption(
         f"{manager_name}: ${manager_state.budget_remaining} left · "
         f"{manager_state.roster_slots_remaining} slots · "
