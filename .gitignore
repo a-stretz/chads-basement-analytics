@@ -1,9 +1,12 @@
 __pycache__/
 *.py[cod]
+*.egg-info/
 .venv/
+.worktrees/
 .env
 .DS_Store
 .streamlit/secrets.toml
+~$*.xlsx
 
 # League-specific/private source and generated data
 data/private/
@@ -11,3 +14,14 @@ data/processed/
 
 # Draft-night state
 state/
+
+# Private league source files that may exist in a local workspace root
+/*keeper*.xlsx
+/*Keeper*.xlsx
+/*Draft History.txt
+/*Draft Results by year.xlsx
+/*Draft*Tracker*.xlsx
+/*Manager History.txt
+/*manager_aliases.yaml
+/*pre-draft rosters.txt
+/*League Settings*.md

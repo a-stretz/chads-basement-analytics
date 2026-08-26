@@ -1,11 +1,73 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 import math
 
 import pandas as pd
 
-from .optimizer import RosterRules, minimum_cost_roster_for_points, optimize_starter_core
+from .optimizer import (
+    RosterRules,
+    minimum_cost_completion_for_points,
+    minimum_cost_roster_for_points,
+    optimize_roster_completion,
+    optimize_starter_core,
+)
+
+
+def bid_up_to_remaining(
+    available: pd.DataFrame,
+    candidate_key: str,
+    owned: pd.DataFrame,
+    budget: float,
+    roster_slots_remaining: int,
+    position_capacity: Mapping[str, int],
+    rules: RosterRules,
+    market_price_col: str = "inflated_aav",
+    points_col: str = "projected_points",
+    maximum_legal_bid: int | None = None,
+) -> int:
+    """Opportunity-cost ceiling for the target manager's remaining roster."""
+    if candidate_key not in set(available["player_key"]):
+        raise KeyError(candidate_key)
+
+    working = available.copy()
+    working["market_price"] = (
+        pd.to_numeric(working[market_price_col], errors="coerce")
+        .fillna(rules.min_bid)
+        .clip(lower=rules.min_bid)
+    )
+    alternative = optimize_roster_completion(
+        available=working.loc[~working.player_key.eq(candidate_key)],
+        owned=owned,
+        budget=budget,
+        roster_slots_remaining=roster_slots_remaining,
+        position_capacity=position_capacity,
+        rules=rules,
+        points_col=points_col,
+        cost_col="market_price",
+    )
+    minimum_points = alternative.projected_points if alternative.success else -1e18
+
+    qualifying = minimum_cost_completion_for_points(
+        available=working,
+        owned=owned,
+        minimum_points=minimum_points,
+        budget=budget,
+        roster_slots_remaining=roster_slots_remaining,
+        position_capacity=position_capacity,
+        rules=rules,
+        points_col=points_col,
+        cost_col="market_price",
+        force_acquire=(candidate_key,),
+        zero_cost=(candidate_key,),
+    )
+    if not qualifying.success:
+        return 0
+
+    ceiling = math.floor(budget - qualifying.required_budget + 1e-9)
+    if maximum_legal_bid is not None:
+        ceiling = min(ceiling, maximum_legal_bid)
+    return max(0, ceiling)
 
 
 def bid_up_to(

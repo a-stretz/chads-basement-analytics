@@ -20,5 +20,5 @@ jobs:
           python-version: '3.12'
       - name: Install package
         run: pip install -e '.[dev]'
-      - name: Test public optimization core
-        run: pytest -q tests/test_optimizer.py tests/test_replacement.py tests/test_bid_up_to.py
+      - name: Test complete public engine
+        run: pytest -q

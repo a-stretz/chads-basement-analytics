@@ -56,9 +56,9 @@ scoring:
     - {max: 99, points: -5}
 
 model:
+  modeled_positions: [QB, RB, WR, TE]
   reserve_minimum_for_bench: true
   use_per_game_yardage_bonuses: false
-  kicker_enabled: true
-  defense_enabled: true
   projection_aggregate: average
   starter_core_objective: projected_points
+
