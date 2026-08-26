@@ -25,7 +25,11 @@ class ScarcityError(RuntimeError):
     pass
 
 
-def _prepared_players(players: pd.DataFrame, points_col: str) -> pd.DataFrame:
+def _prepared_players(
+    players: pd.DataFrame,
+    points_col: str,
+    modeled_positions: tuple[str, ...],
+) -> pd.DataFrame:
     required = {"player_key", "player", "position", points_col}
     missing = required - set(players.columns)
     if missing:
@@ -33,7 +37,7 @@ def _prepared_players(players: pd.DataFrame, points_col: str) -> pd.DataFrame:
     pool = players.copy()
     pool[points_col] = pd.to_numeric(pool[points_col], errors="coerce")
     pool = pool.dropna(subset=["player_key", "player", "position", points_col])
-    pool = pool[pool.position.isin(KNOWN_POSITIONS)]
+    pool = pool[pool.position.isin(modeled_positions)]
     pool = pool.sort_values("player_key", kind="stable").reset_index(drop=True)
     duplicates = pool.loc[pool.player_key.duplicated(), "player_key"]
     if len(duplicates):
@@ -60,9 +64,11 @@ def _solve_assignment_matrix(
     positions = pool.position.to_numpy()
     points = pool[points_col].to_numpy(dtype=float)
     owned_by: dict[str, str] = {}
+    modeled = set(rules.modeled_positions)
     for manager, manager_state in state.managers.items():
         for entry in manager_state.roster:
-            owned_by[entry.player_key] = manager
+            if entry.position in modeled:
+                owned_by[entry.player_key] = manager
     missing_owned = sorted(set(owned_by) - set(player_keys))
     if missing_owned:
         raise ScarcityError(f"Owned player missing from projections: {missing_owned[0]}")
@@ -96,7 +102,7 @@ def _solve_assignment_matrix(
             row[manager_index * player_count + player_index] = 1.0
         add(row, -np.inf, 1.0)
 
-    roster_rules = rules.roster_rules()
+    roster_rules = rules.modeled_roster_rules()
     for manager_index, manager in enumerate(managers):
         manager_state = state.managers[manager]
         add(manager_row(manager_index, positions == "QB"), roster_rules.qb, roster_rules.qb)
@@ -113,7 +119,7 @@ def _solve_assignment_matrix(
             -np.inf,
             float(manager_state.roster_slots_remaining),
         )
-        for position in KNOWN_POSITIONS:
+        for position in rules.modeled_positions:
             add(
                 manager_row(manager_index, available_mask & (positions == position)),
                 -np.inf,
@@ -164,7 +170,7 @@ def calculate_scarcity(
     if target_manager not in state.managers:
         raise ScarcityError(f"Unknown target manager: {target_manager}")
     managers = tuple(sorted(state.managers))
-    pool = _prepared_players(players, points_col)
+    pool = _prepared_players(players, points_col, rules.modeled_positions)
     assignment = _solve_assignment_matrix(pool, state, rules, managers, points_col)
     selected_mask = (
         assignment.any(axis=0)
@@ -179,10 +185,17 @@ def calculate_scarcity(
     outstanding = selected.position.value_counts().sort_index().astype(int).to_dict()
     outstanding["ALL"] = int(len(selected))
     target = state.managers[target_manager]
-    target_needs = dict(sorted({**target.starter_needs, "FLEX": target.flex_need}.items()))
+    target_needs = {
+        position: count
+        for position, count in target.starter_needs.items()
+        if position in rules.modeled_positions
+    }
+    target_needs["FLEX"] = target.flex_need
+    target_needs = dict(sorted(target_needs.items()))
     return ScarcityResult(
         league_replacement_levels=levels,
         outstanding_demand=outstanding,
         target_needs=target_needs,
         selected_available=selected,
     )
+

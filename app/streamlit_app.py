@@ -60,16 +60,24 @@ except (DraftValidationError, LedgerError, RecalculationError, OSError, ValueErr
 
 result = session.snapshot()
 active_sales = tuple(result.state.active_sales)
+modeled_available = result.available.loc[
+    result.available.position.isin(inputs.rules.modeled_positions)
+].copy()
 player_labels = {
     row.player_key: f"{row.player} — {row.position}"
-    for row in result.available.itertuples()
+    for row in modeled_available.itertuples()
 }
 
 with st.sidebar:
     st.header("Current nomination / sale")
+    keeper_summary = " · ".join(
+        f"{status}: {count}" for status, count in inputs.keeper_status_counts if count
+    )
+    if keeper_summary:
+        st.caption(f"Keeper file — {keeper_summary}")
     player_key = st.selectbox(
         "Player",
-        options=result.available.player_key.tolist(),
+        options=modeled_available.player_key.tolist(),
         format_func=lambda key: player_labels[key],
         index=None,
         placeholder="Search available players",
@@ -107,6 +115,74 @@ with st.sidebar:
         except (DraftValidationError, LedgerError, RecalculationError, OSError) as error:
             st.error(str(error))
 
+    unmodeled_positions = [
+        position
+        for position, maximum in sorted(inputs.rules.position_max.items())
+        if position not in inputs.rules.modeled_positions and int(maximum) > 0
+    ]
+    with st.expander("Record DST/K purchase"):
+        if not unmodeled_positions:
+            st.caption("No required unmodeled positions are enabled.")
+        else:
+            manual_player = st.text_input(
+                "Player / unit name",
+                key="unmodeled-player",
+            )
+            manual_position = st.selectbox(
+                "Position",
+                options=unmodeled_positions,
+                key="unmodeled-position",
+            )
+            manual_manager = st.selectbox(
+                "Winning manager",
+                options=inputs.rules.managers,
+                key="unmodeled-manager",
+            )
+            manual_state = result.state.managers[manual_manager]
+            manual_legal = (
+                bool(manual_player.strip())
+                and manual_state.roster_slots_remaining > 0
+                and manual_state.position_capacity.get(manual_position, 0) > 0
+                and manual_state.maximum_legal_bid >= inputs.rules.min_bid
+            )
+            manual_price = st.number_input(
+                "Winning bid",
+                min_value=inputs.rules.min_bid,
+                max_value=max(
+                    inputs.rules.min_bid,
+                    manual_state.maximum_legal_bid,
+                ),
+                value=inputs.rules.min_bid,
+                step=1,
+                disabled=not manual_legal,
+                key="unmodeled-price",
+            )
+            st.caption(
+                f"{manual_manager}: ${manual_state.budget_remaining} left · "
+                f"{manual_state.roster_slots_remaining} slots · "
+                f"max legal bid ${manual_state.maximum_legal_bid}"
+            )
+            if st.button(
+                "Record DST/K sale",
+                use_container_width=True,
+                disabled=not manual_legal,
+            ):
+                try:
+                    session.record_unmodeled_sale(
+                        player=manual_player,
+                        position=manual_position,
+                        manager=manual_manager,
+                        price=int(manual_price),
+                    )
+                    st.rerun()
+                except (
+                    DraftValidationError,
+                    LedgerError,
+                    RecalculationError,
+                    OSError,
+                ) as error:
+                    st.error(str(error))
+
     st.divider()
     if active_sales:
         last_sale = max(active_sales, key=lambda sale: sale.order)
@@ -137,11 +213,19 @@ with st.sidebar:
                 ),
             )
             current = sales_by_id[edit_id]
-            editable_keys = [current.player_key, *result.available.player_key.tolist()]
+            editable_keys = [
+                current.player_key,
+                *modeled_available.player_key.tolist(),
+            ]
             all_labels = {
                 row.player_key: f"{row.player} — {row.position}"
                 for row in inputs.players.itertuples()
             }
+            for sale in active_sales:
+                all_labels.setdefault(
+                    sale.player_key,
+                    f"{sale.player} — {sale.position}",
+                )
             with st.form("edit-sale"):
                 corrected_key = st.selectbox(
                     "Correct player",
@@ -166,9 +250,16 @@ with st.sidebar:
                 )
             if save_edit:
                 try:
+                    projection_keys = set(inputs.players.player_key)
+                    edited_player_key = (
+                        None
+                        if current.player_key not in projection_keys
+                        and corrected_key == current.player_key
+                        else corrected_key
+                    )
                     session.edit_sale(
                         edit_id,
-                        player_key=corrected_key,
+                        player_key=edited_player_key,
                         manager=corrected_manager,
                         price=int(corrected_price),
                     )
@@ -251,3 +342,4 @@ if active_sales:
         hide_index=True,
         use_container_width=True,
     )
+

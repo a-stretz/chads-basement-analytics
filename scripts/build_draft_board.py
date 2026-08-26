@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from auction_engine.live_draft import (
     DraftInputs,
+    LIVE_CONTEXT_SCHEMA_VERSION,
     MarketBaseline,
     RecalculationResult,
     _keeper_entries_by_manager,
@@ -51,12 +52,25 @@ def write_live_artifacts(
     output.mkdir(parents=True, exist_ok=True)
     result = recalculate_draft(inputs, ())
     inputs.players.to_csv(output / "draft_pool_2026.csv", index=False)
+    keeper_entries = [
+        entry for roster in inputs.keepers.values() for entry in roster
+    ]
+    keeper_keys = {entry.player_key for entry in keeper_entries}
+    keeper_value = float(
+        inputs.players.loc[
+            inputs.players.player_key.isin(keeper_keys), "normalized_aav"
+        ].sum()
+    )
     context = {
+        "schema_version": LIVE_CONTEXT_SCHEMA_VERSION,
         "draft_id": draft_id,
         "target_manager": inputs.target_manager,
-        "initial_remaining_capital": inputs.market.initial_remaining_capital,
-        "initial_remaining_baseline_value": (
-            inputs.market.initial_remaining_baseline_value
+        "deployable_league_capital": (
+            inputs.market.initial_remaining_capital
+            + sum(entry.price for entry in keeper_entries)
+        ),
+        "full_baseline_value": (
+            inputs.market.initial_remaining_baseline_value + keeper_value
         ),
         "top_n": inputs.top_n,
     }
@@ -165,3 +179,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from auction_engine.draft_state import Sale
+import pytest
+
+from auction_engine.draft_state import LeagueRules, Sale
 from auction_engine.live_draft import (
     DraftInputs,
     MarketBaseline,
@@ -91,3 +93,56 @@ def test_recalculation_snapshot_is_canonical_across_input_order():
     second = recalculate_draft(shuffled_inputs, tuple(reversed(sales)))
 
     assert canonical_snapshot(first) == canonical_snapshot(second)
+
+
+@pytest.mark.parametrize("k_required", [0, 1])
+def test_unmodeled_dst_and_k_require_slots_without_projections(k_required: int):
+    managers = ("Manager_01", "Manager_02")
+    roster_size = 7 + k_required
+    rules = LeagueRules(
+        managers=managers,
+        salary_cap=200,
+        roster_size=roster_size,
+        min_bid=1,
+        starters={
+            "QB": 1,
+            "RB": 1,
+            "WR": 1,
+            "TE": 1,
+            "FLEX": 0,
+            "DST": 1,
+            "K": k_required,
+        },
+        position_max={
+            "QB": 2,
+            "RB": 4,
+            "WR": 4,
+            "TE": 2,
+            "DST": 3,
+            "K": 3 if k_required else 0,
+        },
+        flex_eligible=("RB", "WR", "TE"),
+        modeled_positions=("QB", "RB", "WR", "TE"),
+    )
+    players = player_pool(per_position=8)
+    players = players.loc[players.position.isin(rules.modeled_positions)].copy()
+    inputs = DraftInputs(
+        rules=rules,
+        keepers={manager: () for manager in managers},
+        players=players,
+        target_manager="Manager_01",
+        market=MarketBaseline(400.0, float(players.normalized_aav.sum())),
+        top_n=8,
+    )
+
+    result = recalculate_draft(inputs, ())
+    target = result.state.managers["Manager_01"]
+
+    assert set(result.board.position) == {"QB", "RB", "WR", "TE"}
+    assert set(result.scarcity.league_replacement_levels) == {"QB", "RB", "WR", "TE"}
+    assert set(result.target_lineup.active.position) == {"QB", "RB", "WR", "TE"}
+    assert target.starter_needs["DST"] == 1
+    assert target.starter_needs["K"] == k_required
+    assert target.roster_slots_remaining == roster_size
+    assert target.maximum_legal_bid == 200 - (roster_size - 1)
+

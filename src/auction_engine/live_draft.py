@@ -17,6 +17,7 @@ from .draft_state import (
     LeagueDraftState,
     LeagueRules,
     RosterEntry,
+    ROSTER_POSITIONS,
     Sale,
     replay_draft,
 )
@@ -36,6 +37,11 @@ from .optimizer import CompletionResult, optimize_roster_completion
 from .scarcity import ScarcityResult, calculate_scarcity
 
 
+ACTIVE_KEEPER_STATUSES = frozenset({"likely", "confirmed"})
+KEEPER_STATUSES = frozenset({*ACTIVE_KEEPER_STATUSES, "opt_out", "none"})
+LIVE_CONTEXT_SCHEMA_VERSION = 2
+
+
 @dataclass(frozen=True)
 class MarketBaseline:
     initial_remaining_capital: float
@@ -50,6 +56,7 @@ class DraftInputs:
     target_manager: str
     market: MarketBaseline
     top_n: int = 80
+    keeper_status_counts: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -88,16 +95,41 @@ def league_rules_from_mapping(
             f"Expected {expected_teams} managers from league config; "
             f"found {len(manager_names)}"
         )
+    starters = {key: int(value) for key, value in config["starters"].items()}
+    position_max = {
+        key: int(value) for key, value in config["position_max"].items()
+    }
+    model = config.get("model", {})
+    modeled_positions = tuple(
+        str(position).upper()
+        for position in model.get("modeled_positions", ROSTER_POSITIONS)
+    )
+    if len(set(modeled_positions)) != len(modeled_positions):
+        raise RecalculationError("modeled_positions must be unique")
+    unknown_modeled = sorted(set(modeled_positions) - set(ROSTER_POSITIONS))
+    if unknown_modeled:
+        raise RecalculationError(
+            f"Unknown modeled position: {unknown_modeled[0]}"
+        )
+    flex_eligible = tuple(config.get("flex_eligible", ("RB", "WR", "TE")))
+    if int(starters.get("FLEX", 0)) and not set(flex_eligible).issubset(
+        modeled_positions
+    ):
+        raise RecalculationError(
+            "Every FLEX-eligible position must be included in modeled_positions"
+        )
+    for position in ("DST", "K"):
+        if int(starters.get(position, 0)) == 0:
+            position_max[position] = 0
     return LeagueRules(
         managers=manager_names,
         salary_cap=int(league["salary_cap"]),
         roster_size=int(league["roster_size"]),
         min_bid=int(league["min_bid"]),
-        starters={key: int(value) for key, value in config["starters"].items()},
-        position_max={
-            key: int(value) for key, value in config["position_max"].items()
-        },
-        flex_eligible=tuple(config.get("flex_eligible", ("RB", "WR", "TE"))),
+        starters=starters,
+        position_max=position_max,
+        flex_eligible=flex_eligible,
+        modeled_positions=modeled_positions,
     )
 
 
@@ -140,6 +172,61 @@ def _keeper_entries_by_manager(
     return {manager: tuple(entries) for manager, entries in keepers.items()}
 
 
+def _normalized_keeper_rows(keeper_rows: pd.DataFrame) -> pd.DataFrame:
+    rows = keeper_rows.copy()
+    rows["status"] = (
+        rows["status"].fillna("none").astype(str).str.strip().str.lower()
+    )
+    rows.loc[rows.status.eq(""), "status"] = "none"
+    unsupported = sorted(set(rows.status) - KEEPER_STATUSES)
+    if unsupported:
+        raise RecalculationError(
+            f"Unsupported keeper status: {unsupported[0]!r}; "
+            f"expected one of {sorted(KEEPER_STATUSES)}"
+        )
+    return rows
+
+
+def _keeper_adjusted_market(
+    context: Mapping[str, Any],
+    keepers: Mapping[str, Sequence[RosterEntry]],
+    players: pd.DataFrame,
+) -> MarketBaseline:
+    if int(context.get("schema_version", 0)) != LIVE_CONTEXT_SCHEMA_VERSION:
+        raise RecalculationError(
+            "Unsupported live context schema. Rebuild live artifacts with "
+            "scripts/build_draft_board.py."
+        )
+    try:
+        deployable_capital = float(context["deployable_league_capital"])
+        full_baseline_value = float(context["full_baseline_value"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise RecalculationError(
+            "Invalid live market context. Rebuild live artifacts with "
+            "scripts/build_draft_board.py."
+        ) from error
+
+    entries = [entry for roster in keepers.values() for entry in roster]
+    keeper_spend = float(sum(entry.price for entry in entries))
+    keeper_keys = {entry.player_key for entry in entries}
+    normalized = players.copy()
+    normalized["normalized_aav"] = pd.to_numeric(
+        normalized["normalized_aav"], errors="coerce"
+    )
+    keeper_rows = normalized.loc[normalized.player_key.isin(keeper_keys)]
+    if keeper_rows.player_key.nunique() != len(keeper_keys):
+        matched = set(keeper_rows.player_key)
+        raise RecalculationError(
+            f"Could not derive market value for keeper: {sorted(keeper_keys - matched)[0]}"
+        )
+    keeper_value = float(keeper_rows.normalized_aav.sum())
+    remaining_capital = deployable_capital - keeper_spend
+    remaining_baseline = full_baseline_value - keeper_value
+    if remaining_capital < 0 or remaining_baseline <= 0:
+        raise RecalculationError("Active keeper state leaves an invalid market baseline")
+    return MarketBaseline(remaining_capital, remaining_baseline)
+
+
 def load_draft_inputs(
     config_path: str | Path,
     pool_path: str | Path,
@@ -154,25 +241,29 @@ def load_draft_inputs(
     missing = required_keeper_columns - set(keeper_rows.columns)
     if missing:
         raise RecalculationError(f"Missing keeper columns: {sorted(missing)}")
+    keeper_rows = _normalized_keeper_rows(keeper_rows)
     managers = tuple(keeper_rows.manager.dropna().astype(str).drop_duplicates())
     rules = league_rules_from_mapping(config, managers)
     active = keeper_rows.loc[
-        keeper_rows.status.isin(["likely", "confirmed"])
+        keeper_rows.status.isin(ACTIVE_KEEPER_STATUSES)
         & keeper_rows.player.notna()
     ].copy()
     keepers = _keeper_entries_by_manager(active, managers, players)
+    market = _keeper_adjusted_market(context, keepers, players)
+    status_counts = tuple(
+        sorted(
+            (str(status), int(count))
+            for status, count in keeper_rows.status.value_counts().items()
+        )
+    )
     return DraftInputs(
         rules=rules,
         keepers=keepers,
         players=players,
         target_manager=str(context["target_manager"]),
-        market=MarketBaseline(
-            initial_remaining_capital=float(context["initial_remaining_capital"]),
-            initial_remaining_baseline_value=float(
-                context["initial_remaining_baseline_value"]
-            ),
-        ),
+        market=market,
         top_n=int(context.get("top_n", 80)),
+        keeper_status_counts=status_counts,
     )
 
 
@@ -198,11 +289,18 @@ def _prepared_pool(players: pd.DataFrame) -> pd.DataFrame:
     return pool
 
 
-def _validate_owned_players(pool: pd.DataFrame, state: LeagueDraftState) -> None:
+def _validate_owned_players(
+    pool: pd.DataFrame,
+    state: LeagueDraftState,
+    modeled_positions: Sequence[str],
+) -> None:
     by_key = pool.set_index("player_key", drop=False)
+    modeled = set(modeled_positions)
     for manager in sorted(state.managers):
         for entry in state.managers[manager].roster:
             if entry.player_key not in by_key.index:
+                if entry.position not in modeled:
+                    continue
                 raise RecalculationError(
                     f"Owned player missing from projections: {entry.player_key}"
                 )
@@ -239,8 +337,18 @@ def _market_state(
     )
 
 
-def _target_owned(pool: pd.DataFrame, state: LeagueDraftState, manager: str) -> pd.DataFrame:
-    keys = {entry.player_key for entry in state.managers[manager].roster}
+def _target_owned(
+    pool: pd.DataFrame,
+    state: LeagueDraftState,
+    manager: str,
+    modeled_positions: Sequence[str],
+) -> pd.DataFrame:
+    modeled = set(modeled_positions)
+    keys = {
+        entry.player_key
+        for entry in state.managers[manager].roster
+        if entry.position in modeled
+    }
     return pool.loc[pool.player_key.isin(keys)].sort_values("player_key", kind="stable")
 
 
@@ -254,7 +362,7 @@ def recalculate_draft(
     pool = _prepared_pool(inputs.players)
     ordered_sales = tuple(sorted(sales, key=lambda sale: sale.order))
     state = replay_draft(inputs.rules, inputs.keepers, ordered_sales)
-    _validate_owned_players(pool, state)
+    _validate_owned_players(pool, state, inputs.rules.modeled_positions)
 
     remaining_capital, remaining_baseline, inflation = _market_state(
         pool, ordered_sales, inputs.market
@@ -264,6 +372,9 @@ def recalculate_draft(
     available["inflated_aav"] = available["inflated_aav"].clip(
         lower=inputs.rules.min_bid
     )
+    modeled_available = available.loc[
+        available.position.isin(inputs.rules.modeled_positions)
+    ].copy()
 
     scarcity = calculate_scarcity(
         pool,
@@ -271,32 +382,43 @@ def recalculate_draft(
         inputs.rules,
         inputs.target_manager,
     )
-    replacement = available.position.map(scarcity.league_replacement_levels)
-    available["replacement_points"] = replacement
-    available["vor"] = 0.0
+    replacement = modeled_available.position.map(
+        scarcity.league_replacement_levels
+    )
+    modeled_available["replacement_points"] = replacement
+    modeled_available["vor"] = 0.0
     has_replacement = replacement.notna()
-    available.loc[has_replacement, "vor"] = (
-        available.loc[has_replacement, "projected_points"]
+    modeled_available.loc[has_replacement, "vor"] = (
+        modeled_available.loc[has_replacement, "projected_points"]
         - replacement.loc[has_replacement]
     )
     available = available.sort_values("player_key", kind="stable").reset_index(drop=True)
+    modeled_available = modeled_available.sort_values(
+        "player_key", kind="stable"
+    ).reset_index(drop=True)
 
     target = state.managers[inputs.target_manager]
-    owned = _target_owned(pool, state, inputs.target_manager)
+    owned = _target_owned(
+        pool,
+        state,
+        inputs.target_manager,
+        inputs.rules.modeled_positions,
+    )
+    modeled_rules = inputs.rules.modeled_roster_rules()
     lineup = optimize_roster_completion(
-        available=available,
+        available=modeled_available,
         owned=owned,
         budget=target.budget_remaining,
         roster_slots_remaining=target.roster_slots_remaining,
         position_capacity=target.position_capacity,
-        rules=inputs.rules.roster_rules(),
+        rules=modeled_rules,
         points_col="projected_points",
         cost_col="inflated_aav",
     )
     if not lineup.success:
         raise RecalculationError(f"Target roster optimization failed: {lineup.message}")
 
-    board = available.sort_values(
+    board = modeled_available.sort_values(
         ["vor", "projected_points", "player_key"],
         ascending=[False, False, True],
         kind="stable",
@@ -304,13 +426,13 @@ def recalculate_draft(
     candidate_keys = board.head(max(0, inputs.top_n)).player_key.tolist()
     bids = {
         key: bid_up_to_remaining(
-            available=available,
+            available=modeled_available,
             candidate_key=key,
             owned=owned,
             budget=target.budget_remaining,
             roster_slots_remaining=target.roster_slots_remaining,
             position_capacity=target.position_capacity,
-            rules=inputs.rules.roster_rules(),
+            rules=modeled_rules,
             maximum_legal_bid=target.maximum_legal_bid,
         )
         for key in candidate_keys
@@ -482,8 +604,8 @@ class LiveDraftSession:
             order=order,
         )
 
-    def record_sale(self, player_key: str, manager: str, price: int) -> Sale:
-        order = max(
+    def _next_sale_order(self) -> int:
+        return max(
             (
                 event.sale.order
                 for event in self.ledger.events
@@ -491,7 +613,50 @@ class LiveDraftSession:
             ),
             default=0,
         ) + 1
-        sale = self._canonical_sale(player_key, manager, price, order)
+
+    def record_sale(self, player_key: str, manager: str, price: int) -> Sale:
+        sale = self._canonical_sale(
+            player_key,
+            manager,
+            price,
+            self._next_sale_order(),
+        )
+        candidate = ledger_record_sale(self.ledger, sale)
+        self._commit(candidate)
+        return sale
+
+    def record_unmodeled_sale(
+        self,
+        player: str,
+        position: str,
+        manager: str,
+        price: int,
+    ) -> Sale:
+        canonical_position = str(position).strip().upper()
+        if canonical_position in self.inputs.rules.modeled_positions:
+            raise RecalculationError(
+                f"Use the projected player pool for modeled position: "
+                f"{canonical_position}"
+            )
+        if canonical_position not in self.inputs.rules.position_max:
+            raise RecalculationError(f"Unknown position: {canonical_position}")
+        if int(self.inputs.rules.position_max[canonical_position]) <= 0:
+            raise RecalculationError(f"Cannot record disabled position: {canonical_position}")
+        canonical_player = str(player).strip()
+        normalized_name = normalize_player_key(canonical_player)
+        if not normalized_name:
+            raise RecalculationError("Projection-free player name cannot be empty")
+        sale = Sale(
+            sale_id=str(uuid4()),
+            player_key=(
+                f"unmodeled-{canonical_position.lower()}-{normalized_name}"
+            ),
+            player=canonical_player,
+            position=canonical_position,
+            manager=manager,
+            price=price,
+            order=self._next_sale_order(),
+        )
         candidate = ledger_record_sale(self.ledger, sale)
         self._commit(candidate)
         return sale
@@ -508,13 +673,25 @@ class LiveDraftSession:
         if sale_id not in active:
             raise LedgerError(f"Sale is not active: {sale_id}")
         current = active[sale_id]
-        corrected = self._canonical_sale(
-            player_key if player_key is not None else current.player_key,
-            manager if manager is not None else current.manager,
-            price if price is not None else current.price,
-            current.order,
-            sale_id=sale_id,
-        )
+        projection_keys = set(self.inputs.players.player_key)
+        if current.player_key not in projection_keys and player_key is None:
+            corrected = Sale(
+                sale_id=sale_id,
+                player_key=current.player_key,
+                player=current.player,
+                position=current.position,
+                manager=manager if manager is not None else current.manager,
+                price=price if price is not None else current.price,
+                order=current.order,
+            )
+        else:
+            corrected = self._canonical_sale(
+                player_key if player_key is not None else current.player_key,
+                manager if manager is not None else current.manager,
+                price if price is not None else current.price,
+                current.order,
+                sale_id=sale_id,
+            )
         candidate = ledger_edit_sale(self.ledger, sale_id, corrected)
         self._commit(candidate)
         return corrected
@@ -522,3 +699,4 @@ class LiveDraftSession:
     def undo_sale(self, sale_id: str) -> None:
         candidate = ledger_undo_sale(self.ledger, sale_id)
         self._commit(candidate)
+

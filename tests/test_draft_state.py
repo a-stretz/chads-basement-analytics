@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from auction_engine.draft_state import (
     DraftValidationError,
@@ -8,6 +11,7 @@ from auction_engine.draft_state import (
     Sale,
     replay_draft,
 )
+from auction_engine.live_draft import league_rules_from_mapping
 from tests.fixtures import league_rules
 
 
@@ -85,3 +89,52 @@ def test_extra_flex_eligible_players_fill_flex_before_becoming_bench():
     assert manager.starter_needs["RB"] == 0
     assert manager.starter_needs["WR"] == 0
     assert manager.flex_need == 1
+
+
+@pytest.mark.parametrize("k_required, expected_max", [(0, 0), (1, 3)])
+def test_k_starter_switch_controls_legal_position_capacity(
+    k_required: int,
+    expected_max: int,
+):
+    config = {
+        "league": {
+            "teams": 1,
+            "salary_cap": 200,
+            "roster_size": 8,
+            "min_bid": 1,
+        },
+        "starters": {
+            "QB": 1,
+            "RB": 1,
+            "WR": 1,
+            "TE": 1,
+            "FLEX": 0,
+            "DST": 1,
+            "K": k_required,
+        },
+        "position_max": {"QB": 2, "RB": 4, "WR": 4, "TE": 2, "DST": 3, "K": 3},
+        "flex_eligible": ["RB", "WR", "TE"],
+        "model": {"modeled_positions": ["QB", "RB", "WR", "TE"]},
+    }
+
+    rules = league_rules_from_mapping(config, ("Manager_01",))
+    manager = replay_draft(rules, {"Manager_01": ()}, ()).managers["Manager_01"]
+
+    assert manager.position_capacity["K"] == expected_max
+    assert manager.starter_needs["K"] == k_required
+    assert rules.modeled_roster_rules().k == 0
+    assert rules.modeled_roster_rules().dst == 0
+
+
+def test_public_config_keeps_dst_and_k_legal_but_unmodeled():
+    config = yaml.safe_load(Path("config/cbxii.yaml").read_text(encoding="utf-8"))
+    managers = tuple(f"Manager_{index:02d}" for index in range(1, 11))
+
+    rules = league_rules_from_mapping(config, managers)
+
+    assert rules.modeled_positions == ("QB", "RB", "WR", "TE")
+    assert rules.roster_rules().dst == 1
+    assert rules.roster_rules().k == 1
+    assert rules.modeled_roster_rules().dst == 0
+    assert rules.modeled_roster_rules().k == 0
+

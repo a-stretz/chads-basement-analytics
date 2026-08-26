@@ -14,12 +14,14 @@ The engine is inspired by the optimization concepts in Fantasy Football Analytic
 - Separates manager identity from changing fantasy-team names and preserves nomination order.
 - Pulls current projections through the actively maintained `FantasyFootballAnalytics/ffanalytics` R package and records which public source scrapers succeeded.
 - Scores projections for CBXII half-PPR settings while intentionally ignoring minor per-game yardage bonuses.
-- Supports keeper removal and keeper salaries.
+- Reloads likely/confirmed keeper decisions from a private CSV and derives the
+  keeper-adjusted market state on every application start.
 - Uses `scipy.optimize.milp` for binary roster optimization with two FLEX slots.
 - Derives replacement levels from a league-wide optimization instead of hard-coded positional ranks.
 - Reserves minimum bench dollars instead of treating bench points as weekly starter points.
 - Calculates player-specific Bid-Up-To ceilings from opportunity cost with roughly two constrained optimization problems per candidate.
-- Includes a Streamlit draft board and purchase log scaffold.
+- Includes a persisted Streamlit draft board with record, edit, undo, and
+  projection-free DST/K accounting.
 
 ## Historical data
 
@@ -43,11 +45,19 @@ python scripts/build_draft_board.py
 streamlit run app/streamlit_app.py
 ```
 
+Keeper decisions live in
+`data/private/provisional_keepers_2026.csv`. Set each row's `status` to
+`likely`, `confirmed`, `opt_out`, or `none`, then reload Streamlit. Both
+`likely` and `confirmed` are active; changing the active player, salary, or
+status automatically recalculates the market from the generated pre-keeper
+context. Re-run `scripts/build_draft_board.py` once after upgrading an older
+context artifact to schema version 2.
+
 ## Modeling notes
 
 ### Keeper-adjusted market
 
-Confirmed or likely keepers are removed from the open player pool and their salaries are removed from league purchasing power. Historical Chad's Basement spending is used to estimate how much of theoretical auction capital is actually deployed.
+Confirmed or likely keepers are removed from the open player pool and their salaries are removed from league purchasing power. Historical Chad's Basement spending is used to estimate how much of theoretical auction capital is actually deployed. Generated artifacts retain pre-keeper market inputs so keeper-file changes are applied on every reload instead of being baked into a static board.
 
 ### Starter-core optimization
 
@@ -57,13 +67,17 @@ The MVP maximizes projected starter points under salary, positional, FLEX, and m
 
 For a candidate player, the engine first solves the best legal roster without that player. It then forces the candidate into the roster and minimizes the cost of the other starters while requiring at least the alternative roster's projected points. The dollars left in the starter budget are the candidate's intrinsic bid ceiling.
 
-### Defense
+### Required but unmodeled positions
 
-D/ST remains a normal optimized position. The model does not force defenses to $1–$2, so an elite unit can justify a higher bid when its projected marginal points are a better use of auction capital.
+D/ST and K remain legal roster requirements but are excluded from projections,
+scarcity, active-lineup points, recommendations, and Bid-Up-To. Their unfilled
+slots still reserve the league minimum bid and therefore constrain every
+manager's maximum legal bid. Purchases can be recorded in the separate DST/K
+entry form even when upstream projections contain no matching row.
 
 ## Next iterations
 
-- Recompute values after every live sale using all managers' remaining budgets and roster needs.
+- Tune the draft-night interaction so one purchase can be entered in a few seconds.
 - Estimate expected clearing price from ten years of league-specific behavior.
 - Add manager-level spending priors by position, early-auction aggression, and stars-and-scrubs tendency.
 - Add scenario simulation and uncertainty-aware objectives.
@@ -73,3 +87,4 @@ D/ST remains a normal optimized position. The model does not force defenses to $
 ## Data privacy
 
 `config/cbxii.yaml` contains scoring and roster rules only and is safe to publish. Raw manager mappings, live keeper selections, normalized non-anonymized history, generated draft boards, and draft-night state stay under gitignored `data/private/`, `data/processed/`, and `state/` paths.
+

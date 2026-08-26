@@ -7,6 +7,9 @@ from typing import Iterable, Mapping
 from .optimizer import RosterRules
 
 
+ROSTER_POSITIONS = ("QB", "RB", "WR", "TE", "DST", "K")
+
+
 @dataclass(frozen=True)
 class LeagueRules:
     managers: tuple[str, ...]
@@ -16,6 +19,7 @@ class LeagueRules:
     starters: Mapping[str, int]
     position_max: Mapping[str, int]
     flex_eligible: tuple[str, ...] = ("RB", "WR", "TE")
+    modeled_positions: tuple[str, ...] = ROSTER_POSITIONS
 
     def roster_rules(self) -> RosterRules:
         return RosterRules(
@@ -28,6 +32,22 @@ class LeagueRules:
             k=int(self.starters.get("K", 0)),
             roster_size=self.roster_size,
             min_bid=self.min_bid,
+        )
+
+    def modeled_roster_rules(self) -> RosterRules:
+        """Starter constraints used only by projection-based calculations."""
+        full = self.roster_rules()
+        modeled = set(self.modeled_positions)
+        return RosterRules(
+            qb=full.qb if "QB" in modeled else 0,
+            rb=full.rb if "RB" in modeled else 0,
+            wr=full.wr if "WR" in modeled else 0,
+            te=full.te if "TE" in modeled else 0,
+            flex=full.flex,
+            dst=full.dst if "DST" in modeled else 0,
+            k=full.k if "K" in modeled else 0,
+            roster_size=full.roster_size,
+            min_bid=full.min_bid,
         )
 
 
@@ -250,3 +270,4 @@ def replay_draft(
         active_sales=ordered_sales,
         owned_player_keys=frozenset(owned),
     )
+

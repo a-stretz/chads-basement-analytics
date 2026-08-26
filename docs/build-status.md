@@ -30,6 +30,13 @@
 - [x] Reject invalid record/edit/undo candidates before replacing the persisted ledger or in-memory snapshot
 - [x] Emit the full normalized pool and market context required to replay the live draft
 - [x] Run the complete public test suite in GitHub CI
+- [x] Store pre-keeper market context and recalculate active keeper deductions on every reload
+- [x] Validate configurable keeper statuses: likely, confirmed, opt-out, and none
+- [x] Separate full legal roster accounting from projection-modeled positions
+- [x] Support `K: 0` and `K: 1` without requiring kicker projections
+- [x] Keep DST/K slots and minimum dollars in roster state and maximum legal bid
+- [x] Exclude DST/K from scarcity, active points, recommendations, and Bid-Up-To
+- [x] Record, persist, edit, replay, and undo projection-free DST/K purchases
 
 ## Phase 1 acceptance verified
 
@@ -42,9 +49,7 @@
 
 ## External state still required
 
-- [ ] Replace likely keepers with confirmed keepers after keeper lock
-- [ ] Set `K: 0` if the league removes kickers before draft night
-- [ ] If K remains, add a kicker projection fallback because the current `ffanalytics` aggregate drops K despite successful raw K scrapes
+- [ ] Change likely keepers to confirmed or opt-out in the private keeper CSV after keeper lock
 
 ## Current preview calibration
 
@@ -52,12 +57,21 @@
 - Likely keeper salary removed: $166
 - Normalized public market value removed by likely keepers: about $208
 - Keeper-driven remaining-market inflation: about 1.024x
-- Current preview uses K=0 pending league decision
+- Current public configuration requires one DST and one K roster slot; both are unmodeled and reserve salary only
+
+## Phase 2 acceptance verified
+
+- [x] Reload likely and confirmed keeper states from the private CSV without code changes
+- [x] Recalculate keeper ownership, purchasing power, normalized baseline, inflation, and Bid-Up-To after an opt-out
+- [x] Reject unknown keeper statuses and stale pre-Phase-2 context explicitly
+- [x] Solve valid live optimization problems for both `K: 0` and `K: 1` with no K projections
+- [x] Preserve DST/K needs, roster slots, budgets, position capacity, and maximum legal bid outside the scoring model
+- [x] Replay projection-free K purchases identically through record, reload, edit, undo, and reload
+- [x] Preserve all Phase 1 deterministic ledger and atomic persistence acceptance tests
 
 ## Next model work
 
-- [ ] Phase 2: make keeper likely/confirmed state selectable without code changes
-- [ ] Phase 2: guarantee valid `K: 0` and `K: 1` optimization, with an isolated kicker fallback if required
 - [ ] Phase 3: tune the draft-night interaction for one purchase in a few seconds
 - [ ] Add expected clearing price using league-specific manager behavior
 - [ ] Add scenario simulation / uncertainty objective
+
